@@ -1,6 +1,7 @@
 ---
 title: "Predicting wins and methods of victory for UFC fighters using tidymodels"
-output: html_document
+author: "bob"
+date: "February 15, 2025"
 ---
 
 The objective is to determine which stats are most predictive of a UFC fighter winning a fight and to train a model to predict the method of victory using the stats of a fighter.
@@ -84,7 +85,7 @@ model_data <- relocate(model_data, result, winner, .after = last_col())
 model_data <- arrange(model_data, fight_id, fight_stat_id)
 ```
 
-Let's determine which stats are most predictive of a fighter winning their fight. First we have to create the model. We will do this using [tidymodels](https://www.tidymodels.org/) functions split our train/test data, create our recipe and pre-processing steps, set our model engine and specifications, create our workflow and finally fit the model. We use the vip() function from the [vip](https://github.com/koalaverse/vip/) package to asses the importance of each stat in predicting the fight result.
+Let's determine which stats are most predictive of a fighter winning their fight. First we have to create the model. We will do this using [tidymodels](https://www.tidymodels.org/) functions to split our train/test data, create our recipe and pre-processing steps, set our model engine and specifications, create our workflow and finally fit the model. We use the vip() function from the [vip](https://github.com/koalaverse/vip/) package to asses the importance of each stat in predicting the fight result.
 
 ```{r}
 set.seed(123)
@@ -138,7 +139,7 @@ cat("Win by: ", paste(unique(model_data$result), collapse = ", "), "\n")
 
 This raises the next question: Can we use a fighter's stats to predict by which method they win each of their fights?
 
-The possible fight outcomes and their relative proprtions in the data are shown below.
+The possible fight outcomes and their relative proportions in the data are shown below.
 
 ```{r}
 model_data %>%
