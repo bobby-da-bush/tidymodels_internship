@@ -1,0 +1,284 @@
+---
+title: "Predicting wins and methods of victory for UFC fighters using tidymodels"
+output: html_document
+---
+
+The objective is to determine which stats are most predictive of a UFC fighter winning a fight and to train a model to predict the method of victory using the stats of a fighter.
+
+The main method of analysis is the [tidymodels](https://www.tidymodels.org/) package. The UFC data was found on [Kaggle](https://www.kaggle.com/datasets/remypereira/mma-dataset-2023-ufc?resource=download) (see the ReadMe). The full data set contains four files related via ID columns for the event, fight, fighter, and fight stat.
+
+```{r load, message=FALSE, warning=FALSE}
+library(tidymodels)
+library(tools)
+library(vip)
+
+# List our data files
+files <- list.files(".data", full.names = TRUE)
+
+# Add each of the data files to our Global environment
+walk(files, function(f) {
+  nm <- file_path_sans_ext(basename(f))
+  df <- read.csv(f)
+  assign(nm, df, envir = .GlobalEnv)
+})
+
+# Print filenames and names of ID columns
+cols <- vector()
+for (obj in ls()) {
+  col <- NULL
+  if (grepl("_data$", obj)) {col <- grep("_id", colnames(get(obj)), value = TRUE)}
+  if(!is.null(col)) {cols <- c(cols, col)}
+}
+
+cat("Files: ", paste(basename(files), collapse = ", "), "\n")
+cat("ID columns: ", paste(unique(cols), collapse = ", "), "\n")
+```
+
+First we will use the ID columns to join our files into a single dataframe, and we will select the stats we want to use to predict the fight result. The chosen stats describe fighter size, stance, strikes thrown and landed, takedowns attempted and achieved, knockdowns, submission attempts, reversals, and control time.
+
+```{r}
+# Select and merge the relevant data for our models
+data <- left_join(ufc_event_data, ufc_fight_data, by = "event_id")
+data <- left_join(data, ufc_fight_stat_data, by = "fight_id")
+data <- left_join(data, ufc_fighter_data, by = "fighter_id")
+
+model_data <- select(
+  data, 
+  fight_id, 
+  fighter_id, 
+  fight_stat_id, 
+  fighter_id, 
+  fighter_height_cm, 
+  fighter_weight_lbs, 
+  fighter_reach_cm, 
+  fighter_stance,
+  total_strikes_att, 
+  total_strikes_succ, 
+  sig_strikes_att, 
+  sig_strikes_succ, 
+  knockdowns, 
+  takedown_att, 
+  takedown_succ, 
+  submission_att, 
+  reversals, 
+  ctrl_time, 
+  result,
+  winner
+) 
+
+# Reformat control time from format "MM:SS" to total seconds
+model_data <- model_data %>% 
+  mutate(
+    ctrl_time = case_when(
+      ctrl_time == "--" ~ NA_character_,
+      TRUE ~ ctrl_time),
+    ctrl_time_seconds = case_when(
+      is.na(ctrl_time) ~ NA_real_,
+      TRUE ~ as.numeric(substr(ctrl_time, 1, regexpr(":", ctrl_time)-1)) * 60 + as.numeric(substr(ctrl_time, regexpr(":", ctrl_time)+1, nchar(ctrl_time))))) %>%
+  select(-ctrl_time)
+
+# Clean and preprocess data
+model_data <- na.omit(model_data)
+model_data <- mutate(model_data, winner = ifelse(winner == fighter_id, 1, 0))
+model_data <- relocate(model_data, result, winner, .after = last_col())
+model_data <- arrange(model_data, fight_id, fight_stat_id)
+```
+
+Let's determine which stats are most predictive of a fighter winning their fight. First we have to create the model. We will do this using [tidymodels](https://www.tidymodels.org/) functions split our train/test data, create our recipe and pre-processing steps, set our model engine and specifications, create our workflow and finally fit the model. We use the vip() function from the [vip](https://github.com/koalaverse/vip/) package to asses the importance of each stat in predicting the fight result.
+
+```{r}
+set.seed(123)
+tidymodels_prefer()
+
+# Create training/testing split
+split <- initial_split(model_data, prop = 0.8, strata = winner)
+train <- training(split)
+test <- testing(split)
+
+# Create recipe
+recipe <- recipe(
+  winner ~ fighter_height_cm + fighter_weight_lbs + fighter_reach_cm + fighter_stance + 
+           total_strikes_att + total_strikes_succ + sig_strikes_att + sig_strikes_succ + 
+           knockdowns + takedown_att + takedown_succ + submission_att + reversals + ctrl_time_seconds, 
+  data = train) %>%
+  step_mutate(winner = factor(winner, levels = c("0", "1"))) %>%
+  step_mutate(fighter_stance = na_if(fighter_stance, "")) %>%
+  step_unknown(fighter_stance) %>%
+  step_dummy(fighter_stance) %>%
+  step_normalize(all_numeric_predictors())
+
+# Create logistic regression model
+spec <- logistic_reg(penalty = 0.01) %>%
+  set_engine("glmnet") %>%
+  set_mode("classification")
+
+# Create workflow
+workflow <- workflow() %>%
+  add_recipe(recipe) %>%
+  add_model(spec)
+
+# Fit model
+fit <- workflow %>% fit(data = train)
+
+# Calculate variable importance
+importance <- fit %>%
+  extract_fit_parsnip() %>%
+  vip()
+
+print(importance)
+```
+
+Evidently (and maybe not surprisingly) the most important statistics that predict whether a fighter will win or lose a fight are significant strikes, both attempted and successfully landed, and how many of those strikes resulted in a knockdown on their opponent. Total control time, takedowns attempted and achieved, and submission attempts also show high importance.
+
+We see from our data that there are only five ways to win a fight.
+
+```{r}
+cat("Win by: ", paste(unique(model_data$result), collapse = ", "), "\n")
+```
+
+This raises the next question: Can we use a fighter's stats to predict by which method they win each of their fights?
+
+The possible fight outcomes and their relative proprtions in the data are shown below.
+
+```{r}
+model_data %>%
+  count(result) %>%
+  mutate(proportion = n/sum(n))
+```
+
+Let's again use [tidymodels](https://www.tidymodels.org/) to try to predict the fight outcome from the given stats.
+
+```{r}
+# Filter for winning fights only and select relevant features
+model_data <- model_data %>%
+  filter(winner == 1) %>%
+  select(-fight_id, -fighter_id, -fight_stat_id, -winner) %>%
+  mutate(result = as.factor(result))
+
+# Split the data
+set.seed(123)
+split <- initial_split(model_data, prop = 0.8, strata = result)
+train <- training(split)
+test <- testing(split)
+
+# Create cross-validation folds
+folds <- vfold_cv(train, v = 5, strata = result)
+
+# Create a recipe for preprocessing
+recipe <- recipe(result ~ ., data = train) %>%
+  step_string2factor(fighter_stance) %>%
+  step_dummy(fighter_stance) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  step_zv(all_predictors())
+
+# Create a random forest model specification
+rf_spec <- rand_forest(
+  trees = 1000,
+  min_n = tune(),
+  mtry = tune()
+) %>%
+  set_engine("ranger", importance = "impurity") %>%
+  set_mode("classification")
+
+# Create a workflow
+rf_workflow <- workflow() %>%
+  add_recipe(recipe) %>%
+  add_model(rf_spec)
+
+# Define the parameter grid
+rf_grid <- grid_regular(
+  min_n(range = c(2, 10)),
+  mtry(range = c(2, 8)),
+  levels = 5
+)
+
+# Tune the model
+rf_tune_results <- tune_grid(
+  rf_workflow,
+  resamples = folds,
+  grid = rf_grid,
+  metrics = metric_set(accuracy, roc_auc)
+)
+
+# Get best parameters
+best_params <- select_best(rf_tune_results, metric = "accuracy")
+
+# Finalize the workflow with best parameters
+final_workflow <- rf_workflow %>%
+  finalize_workflow(best_params)
+
+# Fit the final model
+final_fit <- final_workflow %>%
+  fit(data = train)
+
+# Make predictions on test set
+predictions <- predict(final_fit, test)
+predictions_prob <- predict(final_fit, test, type = "prob")
+
+# Combine actual and predicted values
+results <- bind_cols(
+  test %>% select(result),
+  predictions,
+  predictions_prob
+)
+
+# Calculate performance metrics
+conf_mat <- conf_mat(results, truth = result, estimate = .pred_class)
+accuracy <- accuracy(results, truth = result, estimate = .pred_class)
+
+# Get variable importance
+final_fit %>%
+  extract_fit_parsnip() %>%
+  vip()
+
+# Print results
+print("Confusion Matrix:")
+print(conf_mat)
+print("Accuracy:")
+print(accuracy)
+```
+
+Now that we know which stats are highly predictive of the pathway to victory, we will filter for the fights where the winner had high values for each stat and see if excelling in a particular stat results in a higher probability of a certain fight outcome.
+
+```{r}
+# Function to analyze fights where winner excelled in a particular stat
+analyze_high_values <- function(data, variable) {
+  threshold <- quantile(data[[variable]], 0.75, na.rm = TRUE)
+  
+  high_value_results <- data %>%
+    filter(!!sym(variable) >= threshold) %>%
+    count(result) %>%
+    mutate(proportion = n / sum(n)) %>%
+    arrange(desc(proportion))
+  
+  top_result <- high_value_results %>%
+    slice(1)
+  
+  return(data.frame(
+    variable = variable,
+    threshold = threshold,
+    most_common_result = top_result$result,
+    probability = top_result$proportion
+  ))
+}
+
+# Top 10 important variables
+important_vars <- c("submission_att", "total_strikes_att", "total_strikes_succ", "sig_strikes_att", "knockdowns", "ctrl_time_seconds", "sig_strikes_succ", "takedown_att", "takedown_succ", "fighter_reach_cm")
+
+# Analyze each variable
+results_analysis <- map_df(important_vars, ~analyze_high_values(model_data, .x))
+
+# Print results in a nice format
+results_analysis %>%
+  mutate(
+    probability = round(probability * 100, 1),
+    threshold = round(threshold, 2)) %>%
+  arrange(desc(probability)) %>%
+  mutate(interpretation = paste0(
+    "When ", variable, " is above ", threshold, 
+    ", the most likely result is ", most_common_result,
+    " (", probability, "% of cases)")) %>%
+  pull(interpretation)
+```
+
+Evidently (and again, maybe not surprisingly), having an impressive stat for any kind of striking, takedown, or control time suggests that the fighter will win by decision. Two exceptions to this are knockdowns, which suggest a fighter will win by KO/TKO, and submission attempts, which suggest a fighter will win by submission. A larger reach also increases the probability of winning by KO/TKO.
