@@ -1,3 +1,4 @@
+*.Rhistory
+*.Rproj.user/
 UFC\ tidymodels/.data/
-UFC\ tidymodels/.Rproj.user/
-.Rproj.user
+VPA\ Shiny\ Map/.data/geometry.geojson
