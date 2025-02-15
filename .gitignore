@@ -2,3 +2,6 @@
 *.Rproj.user/
 UFC\ tidymodels/.data/
 VPA\ Shiny\ Map/.data/geometry.geojson
+VPAI/.env/
+VPAI/.data/
+VPAI/parcel_maps/
